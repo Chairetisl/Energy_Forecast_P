@@ -1,0 +1,11 @@
+# Αγνόησε όλα τα Python αρχεία
+*.py
+*.txt
+*.csv
+*.md
+
+# Κράτησε μόνο τα Excel
+!*.xlsx
+
+# Αν θέλεις να εμφανίζεται και index.html
+!index.html
