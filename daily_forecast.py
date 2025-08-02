@@ -31,7 +31,7 @@ def load_forecast_both_days(series_name, col_name):
             series_name,
             begin=begin,
             end=end,
-            tag='ec',
+            tag='gfs',
             days_ahead=days_ahead,
             time_of_day=time(0, 0),
             frequency=Frequency.PT1H
@@ -407,3 +407,4 @@ for name, result in results.items():
     
 
 print(temp_df.tail(3))
+
