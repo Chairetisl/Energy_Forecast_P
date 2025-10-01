@@ -2,6 +2,15 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
+
+# ========= (2) Thread caps ΠΡΙΝ από numpy/pandas =========
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "2")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "2")
+
 from datetime import datetime, time, timedelta
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -13,14 +22,16 @@ import pandas as pd
 from energyquantified import EnergyQuantified
 from energyquantified.time import Frequency
 
-# --- ML / Plots ---
-import matplotlib.pyplot as plt
-import seaborn as sns
+# --- ML ---
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.model_selection import train_test_split, learning_curve, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score, median_absolute_error, mean_absolute_error
 from xgboost import XGBRegressor
 from inspect import signature
+
+# (1) HalvingRandomSearchCV (πολύ πιο γρήγορο από GridSearch)
+from sklearn.experimental import enable_halving_search_cv  # noqa: F401
+from sklearn.model_selection import HalvingRandomSearchCV
 
 
 # =========================
@@ -37,6 +48,10 @@ EQ_FREQUENCY = Frequency.PT15M  # PT15M για 15λεπτα, PT1H για ώρα
 PV_SOLAR_DAYLIGHT_THRESHOLD = 5.0   # MWh/h για να θεωρήσω “μέρα”
 EPSILON = 1e-6
 DAY_WEIGHT = 3.0                    # ζύγισμα ημερών > νύχτες
+
+# (1) Ρυθμίσεις για γρήγορο αλλά αποδοτικό search στο CI
+CV_FOLDS = 3         # από 5 -> 3 (σημαντική μείωση χρόνου)
+N_JOBS = 2           # 2 vCPU στους GitHub runners
 
 
 # =========================
@@ -195,7 +210,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
         out[f'{c}_roll3_mean'] = out[c].rolling(window=3, min_periods=1).mean()
         out[f'{c}_roll3_std']  = out[c].rolling(window=3, min_periods=1).std().fillna(0)
 
-    # “ίδια ώρα της ημέρας” (pattern ανά ώρα)
+    # “ίδια ώρα της ημέρας”
     out = out.sort_values(['Date','Hour','Minute','Quarter'])
     for c in ['Solar','Wind','Consumption','Temperature']:
         out[f'{c}_sameHour_roll7_mean'] = (
@@ -250,7 +265,9 @@ def resample_15m_to_hourly(df_15m: pd.DataFrame) -> pd.DataFrame:
     """
     df = df_15m.copy()
     if 'date' not in df.columns:
-        df['date'] = pd.to_datetime(df['Date']) + pd.to_timedelta(df['Hour'], unit='h') + pd.to_timedelta(df.get('Minute', 0), unit='m')
+        df['date'] = (pd.to_datetime(df['Date'])
+                      + pd.to_timedelta(df['Hour'], unit='h')
+                      + pd.to_timedelta(df.get('Minute', 0), unit='m'))
     df = df.set_index('date').sort_index()
 
     agg = df[['Temperature','Solar','Wind','Consumption']].resample('H').mean()
@@ -293,7 +310,7 @@ def accepts_sample_weight(est) -> bool:
 
 
 # ==================================
-# 4) TRAIN / PREDICT / EVALUATE
+# 4) TRAIN / PREDICT (χωρίς plots/metrics)
 # ==================================
 def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> None:
     # 4.1 Φόρτωση EQ (15')
@@ -377,99 +394,73 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
     X_np = X_df.fillna(0).to_numpy()
     y_np = np.asarray(y_ser, dtype=float).ravel()
 
-    # Για συνεπή DAY/NIGHT mask στο split
+    # Για συνεπή DAY/NIGHT mask στο split (αν χρειαστεί)
     is_day = np.asarray(ermis_fe['Is_Daylight'].astype(bool).values)
 
     X_train_np, X_test_np, y_train, y_test, w_train, w_test, day_tr, day_te = train_test_split(
         X_np, y_np, sample_weights, is_day, test_size=0.2, random_state=42
     )
 
-    # Κρατάω DataFrame μόνο για ονόματα/διευκόλυνση (όχι για fit)
-    X_train = pd.DataFrame(X_train_np, columns=final_features)
-    X_test  = pd.DataFrame(X_test_np,  columns=final_features)
-
-    # 4.8 GridSearch
-    param_grid_rf = {
-        'n_estimators': [50, 100],
-        'max_depth': [3, 7],
-        'min_samples_split': [10, 15],
-        'min_samples_leaf': [5, 10],
+    # ---------- (1) HalvingRandomSearchCV αντί για GridSearch ----------
+    param_dist_rf = {
+        'n_estimators': [50, 80, 120, 160],
+        'max_depth': [3, 5, 7, None],
+        'min_samples_split': [5, 10, 15],
+        'min_samples_leaf': [3, 5, 10],
         'bootstrap': [True]
     }
-    param_grid_gb = {
-        'n_estimators': [30, 80],
-        'max_depth': [3, 5],
-        'min_samples_split': [10, 15],
-        'min_samples_leaf': [5, 10],
-        'subsample': [0.7, 1.0]
+    param_dist_gb = {
+        'n_estimators': [40, 80, 120, 160],
+        'max_depth': [3, 4, 5],
+        'min_samples_split': [5, 10, 15],
+        'min_samples_leaf': [3, 5, 10],
+        'subsample': [0.7, 0.85, 1.0]
     }
-    param_grid_xgb = {
-        'n_estimators': [30, 80],
-        'max_depth': [3, 5],
-        'min_child_weight': [5, 7],
-        'alpha': [0.1, 0.3],
-        'reg_lambda': [0.1, 0.3],
-        'learning_rate': [0.05, 0.1]
+    param_dist_xgb = {
+        'n_estimators': [80, 120, 160, 220],
+        'max_depth': [3, 4, 5],
+        'min_child_weight': [3, 5, 7],
+        'alpha': [0.0, 0.1, 0.3],
+        'reg_lambda': [0.1, 0.3, 1.0],
+        'learning_rate': [0.05, 0.1],
+        'tree_method': ['hist'],   # πολύ πιο γρήγορο
+        'n_jobs': [N_JOBS]
+    }
+
+    def make_search(est, dist):
+        return HalvingRandomSearchCV(
+            estimator=est,
+            param_distributions=dist,
+            factor=3,
+            resource='n_samples',
+            min_resources='exhaust',
+            cv=CV_FOLDS,
+            n_jobs=N_JOBS,
+            scoring='r2',
+            random_state=42
+        )
+
+    searches = {
+        'RandomForest': make_search(RandomForestRegressor(random_state=42), param_dist_rf),
+        'GradientBoosting': make_search(GradientBoostingRegressor(random_state=42), param_dist_gb),
+        'XGBoost': make_search(XGBRegressor(random_state=42, verbosity=0), param_dist_xgb),
     }
 
     models = {}
-    for name, model, grid in zip(
-        ['RandomForest', 'GradientBoosting', 'XGBoost'],
-        [RandomForestRegressor(random_state=42),
-         GradientBoostingRegressor(random_state=42),
-         XGBRegressor(random_state=42)],
-        [param_grid_rf, param_grid_gb, param_grid_xgb]
-    ):
-        print(f"[GRID] {name}...")
-        gs = GridSearchCV(model, grid, cv=5, scoring='r2', n_jobs=-1)
-        fit_kwargs = {}
-        if accepts_sample_weight(model):
-            fit_kwargs['sample_weight'] = w_train  # 1D ndarray
-        gs.fit(X_train_np, y_train, **fit_kwargs)  # numpy arrays only
-        print(f"[GRID] {name} best params: {gs.best_params_}")
-        models[name] = gs.best_estimator_
+    for name, search in searches.items():
+        # Δώσε sample_weight στο search.fit αν το base estimator το δέχεται
+        if accepts_sample_weight(search.estimator):
+            search.fit(X_train_np, y_train, sample_weight=w_train)
+        else:
+            search.fit(X_train_np, y_train)
 
-    # 4.9 Αξιολόγηση
-    results = {}
-
-    def eval_block(y_true, y_pred, mask=None):
-        if mask is None:
-            mask = np.ones_like(y_true, dtype=bool)
-        yt = y_true[mask]
-        yp = y_pred[mask]
-        return {
-            'RMSE': np.sqrt(mean_squared_error(yt, yp)),
-            'MAE': mean_absolute_error(yt, yp),
-            'MedAE': median_absolute_error(yt, yp),
-            'MAPE%': safe_mape(yt, yp),
-            'SMAPE%': smape(yt, yp),
-            'WMAPE%': wmape(yt, yp),
-            'R2': r2_score(yt, yp) if len(np.unique(yt)) > 1 else np.nan
-        }
-
-    day_mask = day_te.astype(bool)
-    night_mask = ~day_mask
-
-    for name, model in models.items():
-        fit_kwargs = {}
-        if accepts_sample_weight(model):
-            fit_kwargs['sample_weight'] = w_train
-        model.fit(X_train_np, y_train, **fit_kwargs)
-
-        y_pred = np.maximum(model.predict(X_test_np), 0)
-
-        full = eval_block(y_test, y_pred)
-        day  = eval_block(y_test, y_pred, day_mask)
-        night= eval_block(y_test, y_pred, night_mask)
-
-        print(f"[METRICS] {name} (ALL):   RMSE={full['RMSE']:.3f}  MAE={full['MAE']:.3f}  R²={full['R2']:.3f}  "
-              f"MAPE={full['MAPE%']:.2f}%  SMAPE={full['SMAPE%']:.2f}%  WMAPE={full['WMAPE%']:.2f}%")
-        print(f"[METRICS] {name} (DAY):   RMSE={day['RMSE']:.3f}  MAE={day['MAE']:.3f}  R²={day['R2']:.3f}  "
-              f"MAPE={day['MAPE%']:.2f}%  SMAPE={day['SMAPE%']:.2f}%  WMAPE={day['WMAPE%']:.2f}%")
-        print(f"[METRICS] {name} (NIGHT): RMSE={night['RMSE']:.3f} MAE={night['MAE']:.3f} R²={night['R2']:.3f} "
-              f"MAPE={night['MAPE%']:.2f}% SMAPE={night['SMAPE%']:.2f}% WMAPE={night['WMAPE%']:.2f}%")
-
-        results[name] = {'model': model, 'y_pred': y_pred, 'full': full, 'day': day, 'night': night}
+        best_est = search.best_estimator_
+        # Τελικό fit σε ΟΛΟ το training set για καλύτερη ακρίβεια
+        if accepts_sample_weight(best_est):
+            best_est.fit(X_np, y_np, sample_weight=sample_weights)
+        else:
+            best_est.fit(X_np, y_np)
+        models[name] = best_est
 
     # 4.10 Προβλέψεις στο temp_fe (inference set)
     def predict_df(df: pd.DataFrame, model, features: list[str]) -> np.ndarray:
@@ -481,55 +472,16 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
         y_hat = model.predict(X_pred)
         return np.maximum(y_hat, 0)
 
-    for name, res in results.items():
-        temp_fe[f'Predicted_Production_{name}'] = predict_df(temp_fe, res['model'], final_features)
+    for name, model in models.items():
+        temp_fe[f'Predicted_Production_{name}'] = predict_df(temp_fe, model, final_features)
 
-    # 4.11 Έξοδος αρχείου με προβλέψεις
+    # 4.11 Έξοδος αρχείου με προβλέψεις (χωρίς metrics/plots)
     out_cols = ['Date','Hour','Minute','Quarter','Temperature','Solar','Wind','Consumption'] + \
-               [f'Predicted_Production_{n}' for n in results.keys()]
+               [f'Predicted_Production_{n}' for n in models.keys()]
     out_df = temp_fe[out_cols].copy()
     out_path = 'predictions_temperature_hour_wind_consumption.xlsx'
     out_df.to_excel(out_path, index=False)
     print(f"[OK] Αποθηκεύτηκε: {out_path}")
-
-    # 4.12 Διαγράμματα (προαιρετικά — χωρίς show για batch)
-    plt.figure(figsize=(8, 6))
-    sns.histplot(y_np, bins=30, kde=True, color='blue')
-    plt.title('Distribution of Production'); plt.xlabel('Production'); plt.ylabel('Frequency'); plt.grid(True)
-
-    plt.figure(figsize=(10, 8))
-    corr_matrix = ermis_fe.select_dtypes(include=[np.number]).corr(numeric_only=True)
-    sns.heatmap(corr_matrix, annot=False, cmap='coolwarm', center=0)
-    plt.title('Correlation Matrix of Features')
-
-    for name, res in results.items():
-        plt.figure(figsize=(8, 6))
-        train_sizes, train_scores, test_scores = learning_curve(
-            res['model'], X_np, y_np, cv=5, scoring='r2', train_sizes=np.linspace(0.1, 1.0, 10)
-        )
-        plt.plot(train_sizes, np.mean(train_scores, axis=1), label='Training', color='blue')
-        plt.plot(train_sizes, np.mean(test_scores, axis=1), label='Validation', color='green')
-        plt.title(f'Learning Curve – {name}')
-        plt.xlabel('Training examples'); plt.ylabel('R²'); plt.legend(); plt.grid(True)
-
-    for name, res in results.items():
-        resid = y_test - res['y_pred']
-        plt.figure(figsize=(8, 6))
-        plt.scatter(range(len(resid)), resid, color='green', alpha=0.5)
-        plt.axhline(0, color='red', linestyle='--')
-        plt.title(f'Residuals – {name}')
-        plt.xlabel('Test Sample Index'); plt.ylabel('Actual - Predicted'); plt.grid(True)
-
-    # Summary metrics table
-    metrics_rows = []
-    for name, res in results.items():
-        row_all = {'Model': name, 'Split':'ALL', **res['full']}
-        row_day = {'Model': name, 'Split':'DAY', **res['day']}
-        row_nig = {'Model': name, 'Split':'NIGHT', **res['night']}
-        metrics_rows.extend([row_all,row_day,row_nig])
-    metrics_df = pd.DataFrame(metrics_rows)
-    print("\n[SUMMARY METRICS]\n", metrics_df)
-
     print(out_df.tail(3))
 
 
