@@ -25,7 +25,6 @@ from energyquantified.time import Frequency
 # --- ML ---
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score, median_absolute_error, mean_absolute_error
 from xgboost import XGBRegressor
 from inspect import signature
 
@@ -129,7 +128,6 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     if 'Date' in out.columns and not np.issubdtype(out['Date'].dtype, np.datetime64):
         out['Date'] = pd.to_datetime(out['Date'], errors='coerce')
 
-    # Calendar
     out['Weekday'] = out['Date'].dt.weekday
     out['Is_Weekend'] = (out['Weekday'] >= 5).astype(int)
     out['Month'] = out['Date'].dt.month
@@ -154,63 +152,47 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
         return 2
     out['Temp_Bin'] = out['Temperature'].astype(float).apply(temp_bin)
 
-    # Interactions
     out['Solar_Temp'] = out['Solar'] * out['Temperature']
     out['Wind_Temp']  = out['Wind']  * out['Temperature']
     out['Cons_Temp']  = out['Consumption'] * out['Temperature']
     out['Hour_Solar'] = out['Hour'] * out['Solar']
     out['Weekday_Consumption'] = out['Weekday'] * out['Consumption']
 
-    # Sin/Cos Hour
     out['Hour_sin'] = np.sin(2 * np.pi * out['Hour'] / 24)
     out['Hour_cos'] = np.cos(2 * np.pi * out['Hour'] / 24)
 
-    # Ordinal
     out['Ordinal_Date'] = out['Date'].map(pd.Timestamp.toordinal)
 
-    # Ratios
     out['Load_Solar_Ratio'] = out['Consumption'] / (out['Solar'] + 1)
     out['Load_Wind_Ratio']  = out['Consumption'] / (out['Wind'] + 1)
 
-    # Relative Solar (ημερήσια)
     out['Solar_Relative'] = out['Solar'] / (out.groupby(out['Date'].dt.date)['Solar'].transform('max') + 1)
-
-    # Season * Hour
     out['Season_Hour'] = out['Season'] * out['Hour']
-
-    # Peak flag
     out['Is_Peak_Hour'] = out['Hour'].apply(lambda x: 1 if 11 <= x <= 17 else 0)
 
-    # Ημερήσια max/min κατανάλωση
     out['Daily_Max_Consumption'] = out.groupby(out['Date'].dt.date)['Consumption'].transform('max')
     out['Daily_Min_Consumption'] = out.groupby(out['Date'].dt.date)['Consumption'].transform('min')
 
-    # Πολυώνυμα
     out['Temperature_sq'] = out['Temperature'] ** 2
     out['Consumption_sq'] = out['Consumption'] ** 2
 
-    # Αν δεν υπάρχουν Minute/Quarter, κράτα τα
     if 'Minute' not in out.columns:
         out['Minute'] = 0
     if 'Quarter' not in out.columns:
         out['Quarter'] = 0
 
-    # ---- PV-focused features ----
     out['Quarter_In_Day'] = (out['Hour'] * 4 + out['Quarter']).astype(int)
     out['Is_Daylight'] = (out['Solar'] >= PV_SOLAR_DAYLIGHT_THRESHOLD).astype(int)
 
-    # 1ο παράγωγο
     out['dSolar']        = out['Solar'].diff().fillna(0)
     out['dWind']         = out['Wind'].diff().fillna(0)
     out['dConsumption']  = out['Consumption'].diff().fillna(0)
     out['dTemperature']  = out['Temperature'].diff().fillna(0)
 
-    # Rolling στα 15'
     for c in ['Solar','Wind','Consumption','Temperature']:
         out[f'{c}_roll3_mean'] = out[c].rolling(window=3, min_periods=1).mean()
         out[f'{c}_roll3_std']  = out[c].rolling(window=3, min_periods=1).std().fillna(0)
 
-    # “ίδια ώρα της ημέρας”
     out = out.sort_values(['Date','Hour','Minute','Quarter'])
     for c in ['Solar','Wind','Consumption','Temperature']:
         out[f'{c}_sameHour_roll7_mean'] = (
@@ -219,10 +201,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
                .reset_index(level=0, drop=True)
         )
 
-    # Σωρευτικό Solar ανά ημέρα
     out['Solar_cum_day'] = out.groupby(out['Date'].dt.date)['Solar'].cumsum()
-
-    # 2ο παράγωγο
     out['ddSolar'] = out['dSolar'].diff().fillna(0)
 
     return out
@@ -241,10 +220,6 @@ def add_lags_rollings(train_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def detect_training_granularity(ermis_df: pd.DataFrame) -> str:
-    """
-    Ελέγχει αν το ERMIS είναι ωριαίο ή 15λεπτο βάσει count ανά ημέρα.
-    Αν ο διάμεσος αριθμός δειγμάτων/ημέρα > 24 ⇒ 15λεπτα, αλλιώς ώρα.
-    """
     if 'Date' not in ermis_df.columns or 'Hour' not in ermis_df.columns:
         return 'hourly'
     tmp = ermis_df.copy()
@@ -259,10 +234,6 @@ def detect_training_granularity(ermis_df: pd.DataFrame) -> str:
 
 
 def resample_15m_to_hourly(df_15m: pd.DataFrame) -> pd.DataFrame:
-    """
-    Παίρνει 15λεπτα με στήλη 'date' και κάνει ωριαίο μέσο όρο για
-    Temperature / Solar / Wind / Consumption.
-    """
     df = df_15m.copy()
     if 'date' not in df.columns:
         df['date'] = (pd.to_datetime(df['Date'])
@@ -271,7 +242,6 @@ def resample_15m_to_hourly(df_15m: pd.DataFrame) -> pd.DataFrame:
     df = df.set_index('date').sort_index()
 
     agg = df[['Temperature','Solar','Wind','Consumption']].resample('H').mean()
-
     out = agg.reset_index()
     out['Date'] = out['date'].dt.date
     out['Hour'] = out['date'].dt.hour
@@ -280,29 +250,7 @@ def resample_15m_to_hourly(df_15m: pd.DataFrame) -> pd.DataFrame:
     return out[['Date','Hour','Minute','Quarter','Temperature','Solar','Wind','Consumption']]
 
 
-# ---------- robust metrics ----------
-def safe_mape(y_true, y_pred, eps=EPSILON):
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    denom = np.maximum(np.abs(y_true), eps)
-    return np.mean(np.abs((y_true - y_pred) / denom)) * 100.0
-
-def smape(y_true, y_pred, eps=EPSILON):
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    denom = np.maximum((np.abs(y_true) + np.abs(y_pred)) / 2.0, eps)
-    return np.mean(np.abs(y_pred - y_true) / denom) * 100.0
-
-def wmape(y_true, y_pred, eps=EPSILON):
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    num = np.sum(np.abs(y_true - y_pred))
-    den = np.maximum(np.sum(np.abs(y_true)), eps)
-    return (num / den) * 100.0
-
-
 def accepts_sample_weight(est) -> bool:
-    """Ελέγχει αν ο estimator.fit δέχεται sample_weight."""
     try:
         return 'sample_weight' in signature(est.fit).parameters
     except (ValueError, TypeError):
@@ -313,58 +261,53 @@ def accepts_sample_weight(est) -> bool:
 # 4) TRAIN / PREDICT (χωρίς plots/metrics)
 # ==================================
 def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> None:
-    # 4.1 Φόρτωση EQ (15')
+    # EQ 15'
     eq_df_15m = fetch_eq_forecasts_15m(eq_api_key)
     eq_df_15m['date'] = pd.to_datetime(eq_df_15m['date'])
 
-    # 4.2 Φόρτωση ERMIS (training)
+    # ERMIS training
     ermis_df = pd.read_excel(ermis_path, sheet_name=ermis_sheet)
     ermis_df.rename(columns=lambda x: str(x).strip(), inplace=True)
     ermis_df['Date'] = pd.to_datetime(ermis_df['Date'], format='%Y-%m-%d', errors='coerce')
 
-    # 4.3 Ανίχνευση συχνότητας ERMIS
+    # granular
     train_gran = detect_training_granularity(ermis_df)
     print(f"[INFO] ERMIS training granularity: {train_gran}")
 
-    # 4.4 Προετοιμασία inference set (temp_df) ώστε να ταιριάζει με ERMIS
+    # inference set aligned to ERMIS granularity
     if train_gran == 'hourly':
         temp_df = resample_15m_to_hourly(eq_df_15m)
     else:
         temp_df = eq_df_15m[['Date','Hour','Minute','Quarter','Temperature','Solar','Wind','Consumption']].copy()
 
-    # 4.5 Feature engineering
+    # features
     ermis_fe = add_features(ermis_df)
     temp_fe  = add_features(temp_df)
 
-    # Normalized consumption βάσει training
+    # normalization
     max_cons = float(ermis_fe['Consumption'].max() or 1.0)
     ermis_fe['Normalized_Consumption'] = ermis_fe['Consumption'] / max_cons
     temp_fe['Normalized_Consumption']  = temp_fe['Consumption']  / max_cons
 
-    # Lags/Rollings μόνο στο training
+    # lags/rollings for training only
     ermis_fe = add_lags_rollings(ermis_fe)
 
-    # 4.6 Feature set
     required_columns = [
-        'Ordinal_Date', 'Weekday', 'Is_Weekend', 'Month', 'Season',
-        'Hour', 'Hour_Bin', 'Minute', 'Quarter',
-        'Temperature', 'Temp_Bin', 'Solar', 'Wind', 'Consumption',
-        'Solar_Temp', 'Wind_Temp', 'Cons_Temp',
-        'Hour_Solar', 'Weekday_Consumption',
-        'Hour_sin', 'Hour_cos',
-        'Normalized_Consumption',
-        'Consumption_lag1', 'Consumption_lag2', 'Consumption_lag3',
-        'Solar_lag1', 'Solar_lag2', 'Solar_lag3',
-        'Wind_lag1', 'Wind_lag2', 'Wind_lag3',
-        'Consumption_roll3_mean', 'Consumption_roll3_std',
-        'Load_Solar_Ratio', 'Load_Wind_Ratio',
-        'Solar_Relative',
-        'Season_Hour',
-        'Is_Peak_Hour',
-        'Daily_Max_Consumption', 'Daily_Min_Consumption',
-        'Temperature_sq', 'Consumption_sq',
-        # PV-focused:
-        'Quarter_In_Day', 'Is_Daylight',
+        'Ordinal_Date','Weekday','Is_Weekend','Month','Season',
+        'Hour','Hour_Bin','Minute','Quarter',
+        'Temperature','Temp_Bin','Solar','Wind','Consumption',
+        'Solar_Temp','Wind_Temp','Cons_Temp',
+        'Hour_Solar','Weekday_Consumption',
+        'Hour_sin','Hour_cos','Normalized_Consumption',
+        'Consumption_lag1','Consumption_lag2','Consumption_lag3',
+        'Solar_lag1','Solar_lag2','Solar_lag3',
+        'Wind_lag1','Wind_lag2','Wind_lag3',
+        'Consumption_roll3_mean','Consumption_roll3_std',
+        'Load_Solar_Ratio','Load_Wind_Ratio',
+        'Solar_Relative','Season_Hour','Is_Peak_Hour',
+        'Daily_Max_Consumption','Daily_Min_Consumption',
+        'Temperature_sq','Consumption_sq',
+        'Quarter_In_Day','Is_Daylight',
         'dSolar','dWind','dConsumption','dTemperature',
         'Solar_roll3_mean','Solar_roll3_std',
         'Wind_roll3_mean','Wind_roll3_std',
@@ -373,35 +316,29 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
         'Consumption_sameHour_roll7_mean','Temperature_sameHour_roll7_mean',
         'Solar_cum_day','ddSolar'
     ]
-
-    # Εξασφάλιση στηλών
     for col in required_columns:
-        if col not in ermis_fe.columns:
-            ermis_fe[col] = 0
-        if col not in temp_fe.columns:
-            temp_fe[col] = 0
+        if col not in ermis_fe.columns: ermis_fe[col] = 0
+        if col not in temp_fe.columns:  temp_fe[col]  = 0
 
-    # Χ-ψ
+    # X/y
     X_df = ermis_fe[required_columns]
     y_ser = ermis_fe['Production'].astype(float)
 
-    # sample weights (ημέρα βαρύτερη)
+    # weights
     sample_weights = 1.0 + (ermis_fe['Is_Daylight'].astype(float) * (DAY_WEIGHT - 1.0))
     sample_weights = np.asarray(sample_weights, dtype=float).ravel()
 
-    # --- Μετατροπή σε numpy για scikit-learn ---
+    # to numpy
     final_features = X_df.columns.tolist()
     X_np = X_df.fillna(0).to_numpy()
     y_np = np.asarray(y_ser, dtype=float).ravel()
-
-    # Για συνεπή DAY/NIGHT mask στο split (αν χρειαστεί)
     is_day = np.asarray(ermis_fe['Is_Daylight'].astype(bool).values)
 
     X_train_np, X_test_np, y_train, y_test, w_train, w_test, day_tr, day_te = train_test_split(
         X_np, y_np, sample_weights, is_day, test_size=0.2, random_state=42
     )
 
-    # ---------- (1) HalvingRandomSearchCV αντί για GridSearch ----------
+    # --- HalvingRandomSearchCV params ---
     param_dist_rf = {
         'n_estimators': [50, 80, 120, 160],
         'max_depth': [3, 5, 7, None],
@@ -423,7 +360,7 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
         'alpha': [0.0, 0.1, 0.3],
         'reg_lambda': [0.1, 0.3, 1.0],
         'learning_rate': [0.05, 0.1],
-        'tree_method': ['hist'],   # πολύ πιο γρήγορο
+        'tree_method': ['hist'],     # γρήγορο
         'n_jobs': [N_JOBS]
     }
 
@@ -433,7 +370,7 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
             param_distributions=dist,
             factor=3,
             resource='n_samples',
-            min_resources='exhaust',
+            min_resources='smallest',   # FIX (όχι 'exhaust')
             cv=CV_FOLDS,
             n_jobs=N_JOBS,
             scoring='r2',
@@ -441,28 +378,26 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
         )
 
     searches = {
-        'RandomForest': make_search(RandomForestRegressor(random_state=42), param_dist_rf),
-        'GradientBoosting': make_search(GradientBoostingRegressor(random_state=42), param_dist_gb),
-        'XGBoost': make_search(XGBRegressor(random_state=42, verbosity=0), param_dist_xgb),
+        'RandomForest':     make_search(RandomForestRegressor(random_state=42),        param_dist_rf),
+        'GradientBoosting': make_search(GradientBoostingRegressor(random_state=42),    param_dist_gb),
+        'XGBoost':          make_search(XGBRegressor(random_state=42, verbosity=0),    param_dist_xgb),
     }
 
+    # fit + refit on full data
     models = {}
     for name, search in searches.items():
-        # Δώσε sample_weight στο search.fit αν το base estimator το δέχεται
         if accepts_sample_weight(search.estimator):
             search.fit(X_train_np, y_train, sample_weight=w_train)
         else:
             search.fit(X_train_np, y_train)
-
         best_est = search.best_estimator_
-        # Τελικό fit σε ΟΛΟ το training set για καλύτερη ακρίβεια
         if accepts_sample_weight(best_est):
             best_est.fit(X_np, y_np, sample_weight=sample_weights)
         else:
             best_est.fit(X_np, y_np)
         models[name] = best_est
 
-    # 4.10 Προβλέψεις στο temp_fe (inference set)
+    # inference
     def predict_df(df: pd.DataFrame, model, features: list[str]) -> np.ndarray:
         df2 = df.copy()
         for col in features:
@@ -475,7 +410,7 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
     for name, model in models.items():
         temp_fe[f'Predicted_Production_{name}'] = predict_df(temp_fe, model, final_features)
 
-    # 4.11 Έξοδος αρχείου με προβλέψεις (χωρίς metrics/plots)
+    # export
     out_cols = ['Date','Hour','Minute','Quarter','Temperature','Solar','Wind','Consumption'] + \
                [f'Predicted_Production_{n}' for n in models.keys()]
     out_df = temp_fe[out_cols].copy()
