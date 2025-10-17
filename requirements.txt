@@ -1,9 +1,8 @@
-energyquantified
 pandas
 numpy
 matplotlib
 seaborn
 scikit-learn
 xgboost
+energyquantified
 openpyxl
-pytz
