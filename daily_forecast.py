@@ -451,7 +451,7 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
     out_cols = ['Date','Hour','Minute','Quarter','Temperature','Solar','Wind','Consumption','Capacity'] + \
                [f'Predicted_Production_{n}' for n in results.keys()]
     out_df = temp_fe[out_cols].copy()
-    out_path = 'predictions_temperature_hour_wind_consumption_capacity_fast.xlsx'
+    out_path = 'predictions_temperature_hour_wind_consumption.xlsx'
     out_df.to_excel(out_path, index=False)
     print(f"[OK] Saved: {out_path}")
 
@@ -509,6 +509,7 @@ def train_and_predict(ermis_path: str, ermis_sheet: str, eq_api_key: str) -> Non
 # --------------------------
 if __name__ == "__main__":
     train_and_predict(ERMIS_XLSX, ERMIS_SHEET, EQ_API_KEY)
+
 
 
 
