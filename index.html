@@ -1,88 +1,28 @@
 <!DOCTYPE html>
 <html lang="el">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Τελευταία Πρόβλεψη</title>
-
-  <!-- Ζήτησε από τον browser να μην κρατά cache του HTML -->
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-  <meta http-equiv="Pragma" content="no-cache" />
-  <meta http-equiv="Expires" content="0" />
-
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
-    h1 { color: #333; }
-    .date { color: #555; margin-bottom: 20px; }
-    .btn {
-      display: inline-block;
-      padding: 12px 20px;
-      font-size: 16px;
-      color: white;
-      background-color: #007BFF;
-      text-decoration: none;
-      border-radius: 6px;
-    }
-    .btn:hover { background-color: #0056b3; }
-    .file { color:#333; margin-top:10px; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Τελευταία Πρόβλεψη</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
+        h1 { color: #333; }
+        .date { color: #555; margin-bottom: 20px; }
+        .btn {
+            display: inline-block;
+            padding: 12px 20px;
+            font-size: 16px;
+            color: white;
+            background-color: #007BFF;
+            text-decoration: none;
+            border-radius: 6px;
+        }
+        .btn:hover { background-color: #0056b3; }
+    </style>
 </head>
 <body>
-  <h1>📊 Τελευταία Ενημέρωση Πρόβλεψης</h1>
-  <p class="date" id="updated">Τελευταία ενημέρωση: —</p>
-
-  <!-- TIP: Άφησε ΣΤΑΘΕΡΟ το filename και θα προσθέσουμε ?v=timestamp για cache-busting -->
-  <a class="btn" id="download" href="predictions_temperature_hour_wind_consumption.xlsx">⬇ Κατέβασε το αρχείο</a>
-  <p class="file">Αρχείο: <span id="fname">predictions_temperature_hour_wind_consumption.xlsx</span></p>
-
-  <script>
-    (async function () {
-      const file = "predictions_temperature_hour_wind_consumption.xlsx";
-      const a = document.getElementById("download");
-      const updated = document.getElementById("updated");
-      const fname = document.getElementById("fname");
-
-      try {
-        // Κάνε HEAD request στο Excel για να πάρεις το Last-Modified (ίδιο origin -> ok)
-        const res = await fetch(file, { method: "HEAD", cache: "no-cache" });
-        const lastMod = res.headers.get("last-modified");
-
-        // Αν υπάρχει Last-Modified, δείξ’ το όμορφα και βάλε ?v=timestamp στο link
-        if (lastMod) {
-          const d = new Date(lastMod);
-          // Μορφοποίηση dd/mm/yyyy hh:mm (τοπική ώρα Ελλάδας)
-          const pad = (n) => String(n).padStart(2, "0");
-          const dd = pad(d.getDate());
-          const mm = pad(d.getMonth() + 1);
-          const yyyy = d.getFullYear();
-          const hh = pad(d.getHours());
-          const min = pad(d.getMinutes());
-          updated.textContent = `Τελευταία ενημέρωση: ${dd}/${mm}/${yyyy} ${hh}:${min}`;
-
-          // Cache-buster: ?v=<unix ms>
-          const v = d.getTime();
-          a.href = `${file}?v=${v}`;
-        } else {
-          // Fallback: βάλε απλά τρέχουσα ημερομηνία/ώρα και cache-buster με now()
-          const now = new Date();
-          const pad = (n) => String(n).padStart(2, "0");
-          updated.textContent =
-            `Τελευταία ενημέρωση: ${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ` +
-            `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-          a.href = `${file}?v=${now.getTime()}`;
-        }
-
-        fname.textContent = file;
-      } catch (e) {
-        // Σε περίπτωση αποτυχίας, τουλάχιστον βάλε cache-buster με now()
-        const now = new Date();
-        const pad = (n) => String(n).padStart(2, "0");
-        updated.textContent =
-          `Τελευταία ενημέρωση: ${pad(now.getDate())}/${pad(now.getMonth()+1)}/${now.getFullYear()} ` +
-          `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-        a.href = `${file}?v=${now.getTime()}`;
-      }
-    })();
-  </script>
+    <h1>📊 Τελευταία Ενημέρωση Πρόβλεψης</h1>
+    <p class="date">Τελευταία ενημέρωση: 17/10/2025</p>
+    <a class="btn" href="predictions_temperature_hour_wind_consumption.xlsx">⬇ Κατέβασε το αρχείο</a>
 </body>
 </html>
